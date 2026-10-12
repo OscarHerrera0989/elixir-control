@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#171327">
+<title>Elixir Control — Reloj</title>
+<style>
+:root{color-scheme:dark;--bg:#11101a;--panel:#201b30;--line:#423756;--text:#faf7ff;--muted:#c2b8d5;--purple:#c084fc}
+*{box-sizing:border-box}body{margin:0;padding:18px;background:var(--bg);color:var(--text);font:16px system-ui,-apple-system,sans-serif}
+main{max-width:480px;margin:auto}h1{font-size:1.7rem;margin:5px 0}p{color:var(--muted);line-height:1.45}.panel{padding:18px;margin:14px 0;border:1px solid var(--line);border-radius:18px;background:var(--panel)}
+.timer{text-align:center;font-size:3.4rem;font-weight:850;font-variant-numeric:tabular-nums;margin:10px 0}.center{text-align:center}.muted{color:var(--muted);font-size:.9rem}.phase{color:var(--purple);font-weight:800}.bar{height:10px;background:#40364f;border-radius:10px;overflow:hidden;margin:14px 0}.fill{height:100%;background:var(--purple);width:0%}
+button{font:700 1rem system-ui;color:var(--text);background:#39284e;border:1px solid #72548f;border-radius:12px;padding:13px;cursor:pointer}button:active{opacity:.75}.buttons{display:flex;gap:10px}.buttons button{flex:1}.start{background:#8438c5}.amount{font-size:3rem;font-weight:850;font-variant-numeric:tabular-nums}input{width:100%;accent-color:var(--purple)}.row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+</style>
+</head>
+<body>
+<main>
+  <div class="muted">PROTOTIPO INDEPENDIENTE</div>
+  <h1>Elixir Control</h1>
+  <p>Reloj y regeneración de elixir. No se conecta al juego.</p>
+  <section class="panel">
+    <div class="row"><span class="muted">Tiempo de partida</span><span id="state" class="muted">En pausa</span></div>
+    <div id="clock" class="timer">3:00</div>
+    <div id="phase" class="center phase">Elixir x1 · 2.8 s por unidad</div>
+    <div class="bar"><div id="timebar" class="fill"></div></div>
+    <div class="buttons">
+      <button id="toggle" class="start">▶ Iniciar</button>
+      <button id="reset">↻ Reiniciar</button>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="row"><span class="muted">Elixir estimado</span><span id="mult" class="phase">x1</span></div>
+    <div class="amount"><span id="elixir">5.0</span><span class="muted"> / 10</span></div>
+    <div class="bar"><div id="elixirbar" class="fill" style="width:50%"></div></div>
+    <div class="row" style="margin:10px 0 14px"><span class="muted">Elixir quemado por estar al máximo</span><strong id="burned">0.0</strong></div>
+    <label for="initial">Ajustar elixir inicial: <strong id="initval">5.0</strong></label>
+    <input id="initial" type="range" min="0" max="10" step="0.5" value="5">
+    <div class="buttons" style="margin-top:12px"><button id="minus">− 1</button><button id="plus">+ 1</button></div>
+    <p class="muted">El contador se limita a 10. Al pausar, el reloj y la regeneración se detienen.</p>
+  </section>
+  <section class="panel">
+    <div class="row"><span class="muted">Descuento rápido por teclado</span><span class="phase">Teclas 1–9</span></div>
+    <p class="muted">Pulsa una tecla del 1 al 9 para descontar ese coste de elixir. También puedes usar el teclado numérico. La tecla 0 suma 1 elixir para corregir el contador. La flecha derecha (→) añade 1 de elixir al rival, por ejemplo para ajustar por el Recolector. El contador también suma el elixir desperdiciado cuando el rival permanece en 10.</p>
+    <div class="row"><span>Última entrada</span><strong id="lastkey">Ninguna</strong></div>
+    <p class="muted">El descuento se aplica al elixir estimado y la regeneración continúa mientras corre el reloj.</p>
+  </section>
+  <section class="panel">
+    <div class="row"><span class="muted">Control por voz</span><span id="voiceState" class="phase">Desactivado</span></div>
+    <p class="muted">Activa el micrófono y di en voz alta el número del coste: “uno”, “dos”, “tres”… “nueve”. Solo descuenta si tienes suficiente elixir.</p>
+    <div class="buttons">
+      <button id="voiceToggle" class="start">🎙 Activar voz</button>
+    </div>
+    <p id="voiceHelp" class="muted">Permite el micrófono una vez para este sitio. Si vuelve a preguntarlo, revisa los permisos del sitio y evita abrir la página desde una vista previa temporal.</p>
+  </section>
+  <p class="muted">Fases de referencia: x1 hasta 1:00 restante; x2 durante el último minuto y x3 en el tiempo extra, si aplica al modo.</p>
+</main>
+<script>
+(function(){
+ const byId = id => document.getElementById(id);
+ const GAME=180, OT=120;
+ let running=false, elapsedBefore=0, startedAt=0, frameId=0;
+ let elixir=5, burned=0, lastTick=0;
+
+ function elapsed(){ return elapsedBefore + (running ? (Date.now()-startedAt)/1000 : 0); }
+ function phase(t){
+   if(t<120) return {label:"Elixir x1 · 2.8 s por unidad", mult:"x1", interval:2.8};
+   if(t<240) return {label:"Elixir x2 · 1.4 s por unidad", mult:"x2", interval:1.4};
+   return {label:"Elixir x3 · 0.93 s por unidad", mult:"x3", interval:2.8/3};
+ }
+ function formatTime(t){
+   if(t<GAME){let s=Math.max(0,Math.ceil(GAME-t));return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
+   let s=Math.max(0,Math.ceil(OT-(t-GAME)));return "OT "+Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
+ }
+ function tick(now){
+   if(running){
+     const dt=Math.max(0,(now-lastTick)/1000);
+     const t=elapsed();
+     const p=phase(Math.max(0,t-dt/2));
+     const generated=dt/p.interval;
+     const before=elixir;
+     elixir=Math.min(10,elixir+generated);
+     burned+=Math.max(0,before+generated-10);
+     lastTick=now;
+     if(t>=GAME+OT){elapsedBefore=GAME+OT;running=false;}
+   }
+   draw();
+   if(running) frameId=requestAnimationFrame(tick);
+ }
+ function draw(){
+   const t=elapsed(), p=phase(t);
+   byId("clock").textContent=formatTime(t);
+   byId("phase").textContent=p.label;
+   byId("mult").textContent=p.mult;
+   byId("elixir").textContent=elixir.toFixed(1);
+   byId("elixirbar").style.width=(elixir*10)+"%";
+   byId("timebar").style.width=(Math.min(t,GAME+OT)/(GAME+OT)*100)+"%";
+   byId("state").textContent=running?"En marcha":(t>=GAME+OT?"Finalizada":"En pausa");
+   byId("toggle").textContent=running?"Ⅱ Pausar":"▶ Iniciar";
+   byId("burned").textContent=burned.toFixed(1);
+ }
+ function stop(){
+   if(running){const now=performance.now();tickOnce(now);elapsedBefore=elapsed();running=false;}
+   if(frameId)cancelAnimationFrame(frameId);draw();
+ }
+ function tickOnce(now){
+   const dt=Math.max(0,(now-lastTick)/1000);
+   const t=elapsed();
+   const p=phase(Math.max(0,t-dt/2));
+   const generated=dt/p.interval, before=elixir;
+   elixir=Math.min(10,elixir+generated);
+   burned+=Math.max(0,before+generated-10);
+   lastTick=now;
+ }
+ byId("toggle").addEventListener("click",function(){
+   if(running){tickOnce(performance.now());elapsedBefore=elapsed();running=false;if(frameId)cancelAnimationFrame(frameId);draw();return;}
+   if(elapsedBefore>=GAME+OT){elapsedBefore=0;elixir=Number(byId("initial").value);burned=0;}
+   startedAt=Date.now();lastTick=performance.now();running=true;frameId=requestAnimationFrame(tick);draw();
+ });
+ byId("reset").addEventListener("click",function(){
+   running=false;if(frameId)cancelAnimationFrame(frameId);
+   elapsedBefore=0;startedAt=0;elixir=Number(byId("initial").value);burned=0;lastTick=0;draw();
+ });
+ byId("initial").addEventListener("input",function(){
+   elixir=Number(this.value);burned=0;byId("initval").textContent=elixir.toFixed(1);draw();
+ });
+
+ // Reuse a single speech recognizer during this page session.
+ const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+ let recognition = null, voiceOn = false, lastVoiceCommand = "", lastVoiceAt = 0, micStream = null;
+ const spokenNumbers = {
+   "uno":1,"una":1,"un":1,"1":1,"dos":2,"2":2,"tres":3,"3":3,
+   "cuatro":4,"4":4,"cinco":5,"5":5,"seis":6,"6":6,"siete":7,"7":7,
+   "ocho":8,"8":8,"nueve":9,"9":9
+ };
+ function setVoiceStatus(text){ byId("voiceState").textContent=text; }
+ function handleVoiceTranscript(transcript){
+   const words=transcript.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+     .replace(/[.,!?¿¡]/g," ").trim().split(/\s+/);
+   let cost=null;
+   for(const word of words){if(Object.prototype.hasOwnProperty.call(spokenNumbers,word))cost=spokenNumbers[word];}
+   if(cost===null)return;
+   const now=Date.now(), command=String(cost);
+   if(command===lastVoiceCommand && now-lastVoiceAt<900)return;
+   lastVoiceCommand=command;lastVoiceAt=now;
+   if(cost>elixir){
+     byId("lastkey").textContent="Voz: "+cost+" — elixir insuficiente ("+elixir.toFixed(1)+")";
+     draw();return;
+   }
+   elixir=Math.max(0,elixir-cost);
+   byId("lastkey").textContent="Voz: −"+cost+" de elixir";
+   draw();
+ }
+ function ensureRecognizer(){
+   if(!SpeechRecognition){
+     setVoiceStatus("No compatible");
+     byId("voiceHelp").textContent="Este navegador no admite reconocimiento de voz. Prueba Chrome o Edge.";
+     return false;
+   }
+   if(recognition)return true;
+   recognition=new SpeechRecognition();
+   recognition.lang="es-MX"; recognition.continuous=true; recognition.interimResults=false; recognition.maxAlternatives=1;
+   recognition.onstart=function(){
+     voiceOn=true;setVoiceStatus("Escuchando");byId("voiceToggle").textContent="■ Desactivar voz";
+     byId("voiceHelp").textContent="Micrófono activo. Di un número del 1 al 9. No cierres ni recargues la página durante la partida.";
+   };
+   recognition.onresult=function(event){
+     for(let i=event.resultIndex;i<event.results.length;i++) if(event.results[i].isFinal) handleVoiceTranscript(event.results[i][0].transcript);
+   };
+   recognition.onerror=function(event){
+     if(event.error==="not-allowed"||event.error==="service-not-allowed"){
+       voiceOn=false;setVoiceStatus("Permiso denegado");byId("voiceToggle").textContent="🎙 Activar voz";
+       byId("voiceHelp").textContent="Permite el micrófono en los ajustes del sitio. Las vistas previas o archivos locales pueden no guardar el permiso.";
+     } else if(event.error!=="no-speech"&&event.error!=="aborted"){
+       byId("voiceHelp").textContent="Error de voz: "+event.error+". Comprueba el micrófono y sus permisos.";
+     }
+   };
+   recognition.onend=function(){
+     if(voiceOn){try{recognition.start();}catch(e){}}
+     else {setVoiceStatus("Desactivado");byId("voiceToggle").textContent="🎙 Activar voz";}
+   };
+   return true;
+ }
+ async function startVoice(){
+   if(!ensureRecognizer())return;
+   try{
+     if(!micStream && navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
+       micStream=await navigator.mediaDevices.getUserMedia({audio:true});
+     }
+     voiceOn=true;recognition.start();
+   }catch(e){
+     voiceOn=false;setVoiceStatus("Permiso requerido");byId("voiceToggle").textContent="🎙 Activar voz";
+     byId("voiceHelp").textContent="Permite el micrófono en los ajustes del navegador. Si abres la página como archivo local o vista previa, el permiso puede no guardarse entre aperturas.";
+   }
+ }
+ function stopVoice(){
+   voiceOn=false;if(recognition){try{recognition.stop();}catch(e){}}
+   setVoiceStatus("Desactivado");byId("voiceToggle").textContent="🎙 Activar voz";
+ }
+ byId("voiceToggle").addEventListener("click",function(){if(voiceOn)stopVoice();else startVoice();});
+ byId("minus").addEventListener("click",function(){
+   if(elixir<1){byId("lastkey").textContent="No hay suficiente elixir";return;}
+   elixir-=1;byId("lastkey").textContent="Botón −1 → elixir descontado";draw();
+ });
+ byId("plus").addEventListener("click",function(){elixir=Math.min(10,elixir+1);byId("lastkey").textContent="Botón +1 → ajuste";draw();});
+ document.addEventListener("keydown",function(event){
+   if(event.repeat||event.ctrlKey||event.altKey||event.metaKey)return;
+   const target=event.target;
+   if(target&&(target.tagName==="INPUT"||target.tagName==="TEXTAREA"||target.isContentEditable))return;
+   const key=event.key;
+   if(/^[1-9]$/.test(key)){
+     const cost=Number(key);
+     if(cost>elixir){
+       byId("lastkey").textContent=key+" → insuficiente ("+elixir.toFixed(1)+" disponible)";
+       draw();
+       return;
+     }
+     elixir=Math.max(0,elixir-cost);
+     byId("lastkey").textContent=key+" → −"+cost+" elixir";
+     draw();
+   }
+   else if(key==="0"){
+     elixir=Math.min(10,elixir+1);
+     byId("lastkey").textContent="0 → +1 elixir (corrección)";
+     draw();
+   }
+   else if(key==="ArrowRight"){
+     elixir=Math.min(10,elixir+1);
+     byId("lastkey").textContent="→ → +1 elixir (ajuste)";
+     draw();
+   }
+ });
+ draw();
+})();
+</script>
+</body>
+</html>
