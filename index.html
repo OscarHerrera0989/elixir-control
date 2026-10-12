@@ -124,23 +124,31 @@ button{font:700 1rem system-ui;color:var(--text);background:#39284e;border:1px s
    elixir=Number(this.value);burned=0;byId("initval").textContent=elixir.toFixed(1);draw();
  });
 
- // Reuse a single speech recognizer during this page session.
  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
- let recognition = null, voiceOn = false, lastVoiceCommand = "", lastVoiceAt = 0, micStream = null;
+ let recognition = null, voiceOn = false, lastVoiceCommand = "", lastVoiceAt = 0;
  const spokenNumbers = {
-   "uno":1,"una":1,"un":1,"1":1,"dos":2,"2":2,"tres":3,"3":3,
-   "cuatro":4,"4":4,"cinco":5,"5":5,"seis":6,"6":6,"siete":7,"7":7,
-   "ocho":8,"8":8,"nueve":9,"9":9
+   "uno":1,"una":1,"un":1,"1":1,
+   "dos":2,"2":2,
+   "tres":3,"3":3,
+   "cuatro":4,"4":4,
+   "cinco":5,"5":5,
+   "seis":6,"6":6,
+   "siete":7,"7":7,
+   "ocho":8,"8":8,
+   "nueve":9,"9":9
  };
  function setVoiceStatus(text){ byId("voiceState").textContent=text; }
  function handleVoiceTranscript(transcript){
-   const words=transcript.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+   const words = transcript.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
      .replace(/[.,!?¿¡]/g," ").trim().split(/\s+/);
-   let cost=null;
-   for(const word of words){if(Object.prototype.hasOwnProperty.call(spokenNumbers,word))cost=spokenNumbers[word];}
-   if(cost===null)return;
-   const now=Date.now(), command=String(cost);
-   if(command===lastVoiceCommand && now-lastVoiceAt<900)return;
+   // Use the last recognized number so filler words do not trigger a deduction.
+   let cost = null;
+   for(const word of words){ if(Object.prototype.hasOwnProperty.call(spokenNumbers,word)) cost=spokenNumbers[word]; }
+   if(cost===null) return;
+   const now=Date.now();
+   // Avoid duplicate callbacks for the same transcript in a short interval.
+   const command=String(cost);
+   if(command===lastVoiceCommand && now-lastVoiceAt<900) return;
    lastVoiceCommand=command;lastVoiceAt=now;
    if(cost>elixir){
      byId("lastkey").textContent="Voz: "+cost+" — elixir insuficiente ("+elixir.toFixed(1)+")";
@@ -150,53 +158,54 @@ button{font:700 1rem system-ui;color:var(--text);background:#39284e;border:1px s
    byId("lastkey").textContent="Voz: −"+cost+" de elixir";
    draw();
  }
- function ensureRecognizer(){
+ function startVoice(){
    if(!SpeechRecognition){
      setVoiceStatus("No compatible");
-     byId("voiceHelp").textContent="Este navegador no admite reconocimiento de voz. Prueba Chrome o Edge.";
-     return false;
+     byId("voiceHelp").textContent="Este navegador no admite reconocimiento de voz. Prueba Google Chrome o Microsoft Edge en la computadora.";
+     return;
    }
-   if(recognition)return true;
-   recognition=new SpeechRecognition();
-   recognition.lang="es-MX"; recognition.continuous=true; recognition.interimResults=false; recognition.maxAlternatives=1;
-   recognition.onstart=function(){
-     voiceOn=true;setVoiceStatus("Escuchando");byId("voiceToggle").textContent="■ Desactivar voz";
-     byId("voiceHelp").textContent="Micrófono activo. Di un número del 1 al 9. No cierres ni recargues la página durante la partida.";
-   };
+   recognition = new SpeechRecognition();
+   recognition.lang="es-MX";
+   recognition.continuous=true;
+   recognition.interimResults=false;
+   recognition.maxAlternatives=1;
+   recognition.onstart=function(){voiceOn=true;setVoiceStatus("Escuchando");byId("voiceToggle").textContent="■ Desactivar voz";byId("voiceHelp").textContent="Di un número del 1 al 9. Mantén el navegador abierto y permite el micrófono.";};
    recognition.onresult=function(event){
-     for(let i=event.resultIndex;i<event.results.length;i++) if(event.results[i].isFinal) handleVoiceTranscript(event.results[i][0].transcript);
+     for(let i=event.resultIndex;i<event.results.length;i++){
+       if(event.results[i].isFinal) handleVoiceTranscript(event.results[i][0].transcript);
+     }
    };
    recognition.onerror=function(event){
      if(event.error==="not-allowed"||event.error==="service-not-allowed"){
-       voiceOn=false;setVoiceStatus("Permiso denegado");byId("voiceToggle").textContent="🎙 Activar voz";
-       byId("voiceHelp").textContent="Permite el micrófono en los ajustes del sitio. Las vistas previas o archivos locales pueden no guardar el permiso.";
-     } else if(event.error!=="no-speech"&&event.error!=="aborted"){
-       byId("voiceHelp").textContent="Error de voz: "+event.error+". Comprueba el micrófono y sus permisos.";
+       voiceOn=false;setVoiceStatus("Permiso denegado");
+       byId("voiceToggle").textContent="🎙 Activar voz";
+       byId("voiceHelp").textContent="Permite el acceso al micrófono en la configuración del navegador y vuelve a intentarlo.";
+     } else {
+       byId("voiceHelp").textContent="Error de voz: "+event.error+". Comprueba el micrófono y los permisos.";
      }
    };
    recognition.onend=function(){
-     if(voiceOn){try{recognition.start();}catch(e){}}
-     else {setVoiceStatus("Desactivado");byId("voiceToggle").textContent="🎙 Activar voz";}
-   };
-   return true;
- }
- async function startVoice(){
-   if(!ensureRecognizer())return;
-   try{
-     if(!micStream && navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
-       micStream=await navigator.mediaDevices.getUserMedia({audio:true});
+     if(voiceOn){
+       // Restart with a fresh recognizer after Chrome ends a listening session.
+       try{ recognition = null; startVoice(); }catch(e){}
+     } else {
+       setVoiceStatus("Desactivado");
+       byId("voiceToggle").textContent="🎙 Activar voz";
      }
-     voiceOn=true;recognition.start();
-   }catch(e){
-     voiceOn=false;setVoiceStatus("Permiso requerido");byId("voiceToggle").textContent="🎙 Activar voz";
-     byId("voiceHelp").textContent="Permite el micrófono en los ajustes del navegador. Si abres la página como archivo local o vista previa, el permiso puede no guardarse entre aperturas.";
-   }
+   };
+   try{recognition.start();}
+   catch(e){setVoiceStatus("No se pudo iniciar");byId("voiceHelp").textContent="No se pudo iniciar el micrófono. Prueba Chrome o Edge y revisa los permisos.";}
  }
  function stopVoice(){
-   voiceOn=false;if(recognition){try{recognition.stop();}catch(e){}}
-   setVoiceStatus("Desactivado");byId("voiceToggle").textContent="🎙 Activar voz";
+   voiceOn=false;
+   if(recognition){try{recognition.stop();}catch(e){}}
+   setVoiceStatus("Desactivado");
+   byId("voiceToggle").textContent="🎙 Activar voz";
  }
- byId("voiceToggle").addEventListener("click",function(){if(voiceOn)stopVoice();else startVoice();});
+ byId("voiceToggle").addEventListener("click",function(){
+   if(voiceOn) stopVoice(); else startVoice();
+ });
+
  byId("minus").addEventListener("click",function(){
    if(elixir<1){byId("lastkey").textContent="No hay suficiente elixir";return;}
    elixir-=1;byId("lastkey").textContent="Botón −1 → elixir descontado";draw();
